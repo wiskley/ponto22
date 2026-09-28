@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L GONÇALVES — Controle de Ponto</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#0a0a0c',
+                        cardBg: '#121216',
+                        inputBg: '#18181c',
+                        accentBlue: '#2563eb',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        @media print {
+            body { background: white !important; color: black !important; }
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-darkBg text-zinc-100 min-h-screen flex flex-col selection:bg-blue-600 selection:text-white">
+
+    <!-- CONTAINER DA APLICAÇÃO -->
+    <div id="app" class="flex-1 flex flex-col"></div>
+
+    <script>
+        // --- BANCO DE DADOS LOCAL E ESTADO PERSISTENTE ---
+        const DB = {
+            init() {
+                if (!localStorage.getItem('lgoncalves_users')) {
+                    localStorage.setItem('lgoncalves_users', JSON.stringify([
+                        { id: 'u1', name: 'Administrador', email: 'admin@obra.com', pass: '9070', role: 'ADMIN', cargo: 'Gestor da Obra', setor: 'Administração', active: true },
+                        { id: 'u2', name: 'Carlos Silva', code: '1002', role: 'EMPLOYEE', cargo: 'Operador', setor: 'Obra Principal', active: true }
+                    ]));
+                }
+                if (!localStorage.getItem('lgoncalves_records')) {
+                    localStorage.setItem('lgoncalves_records', JSON.stringify([]));
+                }
+                if (!localStorage.getItem('lgoncalves_audit')) {
+                    localStorage.setItem('lgoncalves_audit', JSON.stringify([]));
+                }
+                if (!localStorage.getItem('lgoncalves_settings')) {
+                    localStorage.setItem('lgoncalves_settings', JSON.stringify({
+                        companyName: 'L Gonçalves Construtora & Obra',
+                        cnpj: '12.345.678/0001-99',
+                        timezone: 'America/Sao_Paulo',
+                        tolerance: 10
+                    }));
+                }
+            },
+            getUsers() { return JSON.parse(localStorage.getItem('lgoncalves_users') || '[]'); },
+            saveUsers(u) { localStorage.setItem('lgoncalves_users', JSON.stringify(u)); },
+            getRecords() { return JSON.parse(localStorage.getItem('lgoncalves_records') || '[]'); },
+            saveRecord(r) { const recs = this.getRecords(); recs.push(r); localStorage.setItem('lgoncalves_records', JSON.stringify(recs)); },
+            getAudit() { return JSON.parse(localStorage.getItem('lgoncalves_audit') || '[]'); },
+            saveAudit(a) { const aud = this.getAudit(); aud.push(a); localStorage.setItem('lgoncalves_audit', JSON.stringify(aud)); },
+            getSettings() { return JSON.parse(localStorage.getItem('lgoncalves_settings') || '{}'); },
+            saveSettings(s) { localStorage.setItem('lgoncalves_settings', JSON.stringify(s)); }
+        };
+
+        DB.init();
+
+        let currentRoute = 'terminal'; // 'terminal', 'admin-login', 'admin-dashboard'
+        let currentAdmin = JSON.parse(sessionStorage.getItem('lgoncalves_admin')) || null;
+        let adminTab = 'dashboard'; // 'dashboard', 'employees', 'records', 'audit', 'settings'
+        let filterEmp = 'all';
+        let filterDate = '';
+        let reportMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+
+        function navigate(route) {
+            currentRoute = route;
+            render();
+            window.scrollTo(0, 0);
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            if (!app) return;
+            app.innerHTML = '';
+
+            if (currentRoute === 'terminal') {
+                app.innerHTML = renderTerminalPage();
+                initClock();
+            } else if (currentRoute === 'admin-login') {
+                app.innerHTML = renderAdminLoginPage();
+            } else if (currentRoute === 'admin-dashboard') {
+                if (!currentAdmin) {
+                    navigate('admin-login');
+                    return;
+                }
+                app.innerHTML = renderAdminDashboardView();
+                initClock();
+            }
+        }
+
+        function initClock() {
+            setInterval(() => {
+                const clocks = document.querySelectorAll('.live-clock');
+                const nowStr = new Date().toLocaleString('pt-BR');
+                clocks.forEach(c => c.innerText = nowStr);
+            }, 1000);
+        }
+
+        // --- 1. TERMINAL DO FUNCIONÁRIO (CÓDIGO DE 4 NÚMEROS) ---
+        function renderTerminalPage() {
+            const settings = DB.getSettings();
+            return `
+                <div class="min-h-screen flex flex-col justify-between p-4 md:p-8">
+                    <div class="flex justify-between items-center max-w-4xl mx-auto w-full">
+                        <div class="flex items-center gap-2">
+                            <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-sm">L</div>
+                            <span class="font-bold text-base text-white">${settings.companyName || 'L GONÇALVES'}</span>
+                        </div>
+                        <div class="text-right">
+                            <span class="live-clock text-sm font-mono font-bold text-blue-400">--/--/---- --:--:--</span>
+                            <p class="text-[11px] text-zinc-400">Terminal Oficial</p>
+                        </div>
+                    </div>
+
+                    <div class="max-w-md mx-auto w-full bg-cardBg border border-zinc-800/80 rounded-3xl p-6 md:p-8 shadow-2xl space-y-6 my-auto">
+                        <div class="text-center space-y-1">
+                            <h1 class="text-xl font-bold text-white">Registro de Ponto</h1>
+                            <p class="text-xs text-zinc-400">Digite seu código PIN de 4 dígitos</p>
+                        </div>
+
+                        <div id="terminal-feedback" class="hidden p-3 rounded-xl text-center text-xs"></div>
+
+                        <form onsubmit="handlePunchSubmit(event)" class="space-y-4">
+                            <div>
+                                <input type="text" id="punch-code-input" inputmode="numeric" pattern="[0-9]*" required maxlength="4" autocomplete="off" autofocus class="w-full bg-inputBg border border-zinc-800 rounded-2xl py-4 text-center text-3xl font-mono tracking-widest text-blue-400 focus:outline-none focus:border-blue-600 transition" placeholder="0000">
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-xl text-sm font-bold text-white transition shadow-lg shadow-blue-600/30 cursor-pointer">Registrar Ponto</button>
+                        </form>
+                    </div>
+
+                    <div class="text-center">
+                        <button onclick="navigate('admin-login')" class="text-xs text-zinc-500 hover:text-zinc-300 transition underline cursor-pointer">Área do Administrador</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handlePunchSubmit(e) {
+            e.preventDefault();
+            const input = document.getElementById('punch-code-input');
+            if (!input) return;
+            const code = input.value.trim();
+
+            const users = DB.getUsers();
+            const user = users.find(u => u.code === code && u.role === 'EMPLOYEE' && u.active !== false);
+
+            if (!user) {
+                showFeedback('Código PIN inválido ou funcionário desativado.', 'error');
+                input.value = '';
+                return;
+            }
+
+            const records = DB.getRecords().filter(r => r.userId === user.id);
+            const todayStr = new Date().toDateString();
+            const todayRecords = records.filter(r => new Date(r.timestamp).toDateString() === todayStr);
+
+            if (todayRecords.length >= 4) {
+                showFeedback(`${user.name}: Jornada de hoje já foi totalmente concluída.`, 'error');
+                input.value = '';
+                return;
+            }
+
+            const types = ['Entrada', 'Intervalo', 'Retorno', 'Saída'];
+            const type = types[todayRecords.length];
+
+            DB.saveRecord({
+                id: 'r_' + Math.random().toString(36).substr(2, 6),
+                userId: user.id,
+                userName: user.name,
+                cargo: user.cargo,
+                type,
+                timestamp: new Date().toISOString()
+            });
+
+            showFeedback(`✅ ${user.name} — ${type} registrada com sucesso!`, 'success');
+            input.value = '';
+        }
+
+        function showFeedback(msg, type) {
+            const fb = document.getElementById('terminal-feedback');
+            if (!fb) return;
+            fb.innerText = msg;
+            fb.className = `p-3 rounded-xl text-center text-xs font-medium ${type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border border-red-500/20 text-red-400'}`;
+            fb.classList.remove('hidden');
+            setTimeout(() => { fb.classList.add('hidden'); }, 4000);
+        }
+
+        // --- 2. LOGIN DO ADMINISTRADOR ---
+        function renderAdminLoginPage() {
+            return `
+                <div class="min-h-screen flex items-center justify-center p-4">
+                    <div class="w-full max-w-md bg-cardBg border border-zinc-800/80 rounded-2xl p-8 shadow-2xl backdrop-blur-xl space-y-6">
+                        <div class="text-center">
+                            <h1 class="text-2xl font-bold tracking-tight text-white">L GONÇALVES Admin</h1>
+                            <p class="text-xs text-zinc-400 mt-1">Acesso restrito ao gestor</p>
+                        </div>
+
+                        <div id="admin-login-error" class="hidden p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-lg text-center"></div>
+
+                        <form onsubmit="handleAdminLogin(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-medium text-zinc-400 mb-1">E-mail</label>
+                                <input type="email" id="admin-email" required class="w-full bg-inputBg border border-zinc-800 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-blue-600 transition" placeholder="admin@obra.com">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-zinc-400 mb-1">Senha</label>
+                                <input type="password" id="admin-pass" required class="w-full bg-inputBg border border-zinc-800 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-blue-600 transition" placeholder="••••••••">
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg text-sm transition shadow-lg shadow-blue-600/20 cursor-pointer">Entrar no Painel</button>
+                        </form>
+
+                        <div class="flex justify-between items-center text-xs pt-4 border-t border-zinc-800/80">
+                            <button onclick="navigate('terminal')" class="text-zinc-400 hover:text-white transition cursor-pointer">← Voltar ao Terminal</button>
+                            <span class="text-zinc-500"><strong>admin@obra.com</strong> / <strong>9070</strong></span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleAdminLogin(e) {
+            e.preventDefault();
+            const email = document.getElementById('admin-email').value.trim();
+            const pass = document.getElementById('admin-pass').value.trim();
+            const users = DB.getUsers();
+
+            const admin = users.find(u => u.email === email && u.role === 'ADMIN' && u.pass === pass);
+
+            if (!admin) {
+                const err = document.getElementById('admin-login-error');
+                err.innerText = 'E-mail ou senha incorretos.';
+                err.classList.remove('hidden');
+                return;
+            }
+
+            currentAdmin = admin;
+            sessionStorage.setItem('lgoncalves_admin', JSON.stringify(admin));
+            navigate('admin-dashboard');
+        }
+
+        function adminLogout() {
+            currentAdmin = null;
+            sessionStorage.removeItem('lgoncalves_admin');
+            navigate('terminal');
+        }
+
+        // --- 3. DASHBOARD ADMINISTRATIVO COMPLETO ---
+        function renderAdminDashboardView() {
+            const users = DB.getUsers();
+            const employees = users.filter(u => u.role === 'EMPLOYEE');
+            const records = DB.getRecords();
+            const auditLogs = DB.getAudit();
+            const settings = DB.getSettings();
+
+            const todayStr = new Date().toDateString();
+            const employeesTodayIds = [...new Set(records.filter(r => new Date(r.timestamp).toDateString() === todayStr).map(r => r.userId))];
+            const activeEmployees = employees.filter(e => e.active !== false);
+            const presentCount = employeesTodayIds.length;
+            const absentCount = Math.max(0, activeEmployees.length - presentCount);
+
+            const activeWithoutExit = employees.filter(e => {
+                const empRecs = records.filter(r => r.userId === e.id && new Date(r.timestamp).toDateString() === todayStr);
+                const hasEntry = empRecs.some(r => r.type === 'Entrada');
+                const hasExit = empRecs.some(r => r.type === 'Saída');
+                return hasEntry && !hasExit;
+            });
+
+            return `
+                <div class="min-h-screen flex bg-darkBg text-zinc-100">
+                    <!-- Sidebar -->
+                    <aside class="no-print hidden md:flex flex-col w-64 bg-cardBg border-r border-zinc-800/80 p-6 space-y-6">
+                        <div class="flex items-center gap-2 cursor-pointer" onclick="navigate('terminal')">
+                            <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-xs">L</div>
+                            <span class="font-bold text-white text-base">L GONÇALVES</span>
+                        </div>
+                        <nav class="space-y-1 text-sm flex-1">
+                            <button onclick="setAdminTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg ${adminTab === 'dashboard' ? 'bg-blue-600/10 text-blue-500 font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'} transition cursor-pointer">📊 Dashboard & Alertas</button>
+                            <button onclick="setAdminTab('employees')" class="w-full text-left px-3 py-2 rounded-lg ${adminTab === 'employees' ? 'bg-blue-600/10 text-blue-500 font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'} transition cursor-pointer">👥 Colaboradores</button>
+                            <button onclick="setAdminTab('records')" class="w-full text-left px-3 py-2 rounded-lg ${adminTab === 'records' ? 'bg-blue-600/10 text-blue-500 font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'} transition cursor-pointer">⏱️ Registros & Relatórios</button>
+                            <button onclick="setAdminTab('audit')" class="w-full text-left px-3 py-2 rounded-lg ${adminTab === 'audit' ? 'bg-blue-600/10 text-blue-500 font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'} transition cursor-pointer">📝 Histórico de Ajustes</button>
+                            <button onclick="setAdminTab('settings')" class="w-full text-left px-3 py-2 rounded-lg ${adminTab === 'settings' ? 'bg-blue-600/10 text-blue-500 font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'} transition cursor-pointer">⚙️ Configurações</button>
+                        </nav>
+                        <div class="space-y-2 pt-4 border-t border-zinc-800">
+                            <button onclick="exportBackup()" class="w-full text-left px-3 py-2 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-lg transition cursor-pointer font-medium">💾 Baixar Backup</button>
+                            <label class="block w-full text-left px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition cursor-pointer text-center">
+                                📂 Restaurar Backup
+                                <input type="file" accept=".json" onchange="importBackup(event)" class="hidden">
+                            </label>
+                            <button onclick="adminLogout()" class="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-zinc-800/50 rounded-lg transition cursor-pointer">Sair do Painel</button>
+                        </div>
+                    </aside>
+
+                    <!-- Main Content -->
+                    <main class="flex-1 p-4 md:p-8 space-y-6 overflow-y-auto pb-20">
+                        <div class="no-print flex justify-between items-center">
+                            <div>
+                                <h2 class="text-2xl font-bold text-white">Painel do Gestor</h2>
+                                <p class="live-clock text-xs text-zinc-400 mt-1">--/--/---- --:--:--</p>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="openNewEmployeeModal()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer">+ Funcionário</button>
+                                <button onclick="adminLogout()" class="md:hidden bg-zinc-800 text-xs px-3 py-2 rounded-lg">Sair</button>
+                            </div>
+                        </div>
+
+                        ${adminTab === 'dashboard' ? renderDashboardTab(activeEmployees.length, presentCount, absentCount, activeWithoutExit) : ''}
+                        ${adminTab === 'employees' ? renderEmployeesTab(employees) : ''}
+                        ${adminTab === 'records' ? renderRecordsTab(employees, records, settings) : ''}
+                        ${adminTab === 'audit' ? renderAuditTab(auditLogs) : ''}
+                        ${adminTab === 'settings' ? renderSettingsTab(settings) : ''}
+                    </main>
+                </div>
+            `;
+        }
+
+        function setAdminTab(tab) {
+            adminTab = tab;
+            render();
+        }
+
+        // --- ABA 1: DASHBOARD ---
+        function renderDashboardTab(totalActive, present, absent, withoutExit) {
+            return `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div class="bg-cardBg border border-zinc-800/80 p-5 rounded-2xl"><span class="text-xs text-zinc-400">Ativos Hoje</span><p class="text-2xl font-bold font-mono text-white mt-2">${totalActive}</p></div>
+                        <div class="bg-cardBg border border-zinc-800/80 p-5 rounded-2xl"><span class="text-xs text-zinc-400">Presentes (Batidas)</span><p class="text-2xl font-bold font-mono text-emerald-400 mt-2">${present}</p></div>
+                        <div class="bg-cardBg border border-zinc-800/80 p-5 rounded-2xl"><span class="text-xs text-zinc-400">Ausentes / Sem Ponto</span><p class="text-2xl font-bold font-mono text-amber-400 mt-2">${absent}</p></div>
+                        <div class="bg-cardBg border border-zinc-800/80 p-5 rounded-2xl"><span class="text-xs text-zinc-400">Sem Saída Registrada</span><p class="text-2xl font-bold font-mono text-red-400 mt-2">${withoutExit.length}</p></div>
+                    </div>
+
+                    ${withoutExit.length > 0 ? `
+                        <div class="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-5 space-y-3">
+                            <h3 class="text-sm font-semibold text-amber-400">⚠️ Alerta: Funcionários trabalhando sem saída registrada hoje</h3>
+                            <div class="flex flex-wrap gap-2">
+                                ${withoutExit.map(e => `<span class="bg-amber-500/20 text-amber-300 text-xs px-3 py-1 rounded-full font-medium">${e.name}</span>`).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="bg-cardBg border border-zinc-800/80 rounded-2xl p-6 space-y-4">
+                        <h3 class="text-sm font-semibold text-white">Visão Geral da Obra</h3>
+                        <p class="text-xs text-zinc-400 leading-relaxed">
+                            O sistema gerencia os registros através dos códigos PIN de 4 dígitos inseridos pelos colaboradores no terminal. Utilize o menu lateral para cadastrar novos funcionários, emitir relatórios em PDF do dia ou mês, ou ajustar configurações da empresa.
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- ABA 2: COLABORADORES ---
+        function renderEmployeesTab(employees) {
+            return `
+                <div class="space-y-6">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-sm font-semibold text-white">Gerenciamento de Colaboradores</h3>
+                        <button onclick="openNewEmployeeModal()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer">+ Novo Funcionário</button>
+                    </div>
+                    <div class="bg-cardBg border border-zinc-800/80 rounded-2xl overflow-hidden shadow-xl">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-inputBg text-xs text-zinc-400 uppercase">
+                                <tr><th class="p-4">PIN</th><th class="p-4">Nome</th><th class="p-4">Cargo / Setor</th><th class="p-4">Status</th><th class="p-4 text-right">Ações</th></tr>
+                            </thead>
+                            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+                                ${employees.length === 0 ? `<tr><td colspan="5" class="p-6 text-center text-xs text-zinc-500">Nenhum funcionário cadastrado.</td></tr>` : employees.map(e => `
+                                    <tr>
+                                        <td class="p-4 font-mono font-bold text-blue-400 text-base">${e.code}</td>
+                                        <td class="p-4 font-medium text-white">${e.name}</td>
+                                        <td class="p-4 text-zinc-400">${e.cargo} (${e.setor})</td>
+                                        <td class="p-4"><span class="text-xs px-2.5 py-1 rounded-full font-medium ${e.active !== false ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">${e.active !== false ? 'Ativo' : 'Desativado'}</span></td>
+                                        <td class="p-4 text-right space-x-2">
+                                            <button onclick="editEmployee('${e.id}')" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs px-3 py-1.5 rounded-lg transition cursor-pointer">Editar</button>
+                                            <button onclick="toggleEmployeeStatus('${e.id}')" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs px-3 py-1.5 rounded-lg transition cursor-pointer">${e.active !== false ? 'Desativar' : 'Ativar'}</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- ABA 3: REGISTROS & RELATÓRIOS PDF (DIA / MÊS) ---
+        function renderRecordsTab(employees, records, settings) {
+            let filteredRecords = records;
+            if (filterEmp !== 'all') filteredRecords = filteredRecords.filter(r => r.userId === filterEmp);
+            if (filterDate) {
+                filteredRecords = filteredRecords.filter(r => new Date(r.timestamp).toISOString().split('T')[0] === filterDate);
+            }
+
+            return `
+                <div class="space-y-6">
+                    <div class="no-print bg-cardBg border border-zinc-800/80 rounded-2xl p-5 flex flex-wrap gap-4 items-center justify-between">
+                        <h3 class="text-sm font-semibold text-white">Relatórios & Espelho de Ponto</h3>
+                        <div class="flex flex-wrap gap-3 text-xs items-center">
+                            <div>
+                                <label class="text-zinc-400 block mb-1">Funcionário:</label>
+                                <select onchange="filterEmp = this.value; render();" class="bg-inputBg border border-zinc-800 px-3 py-1.5 rounded-lg text-white">
+                                    <option value="all">Todos</option>
+                                    ${employees.map(e => `<option value="${e.id}" ${filterEmp === e.id ? 'selected' : ''}>${e.name}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-zinc-400 block mb-1">Data Específica:</label>
+                                <input type="date" value="${filterDate}" onchange="filterDate = this.value; render();" class="bg-inputBg border border-zinc-800 px-3 py-1.5 rounded-lg text-white">
+                            </div>
+                            <div>
+                                <label class="text-zinc-400 block mb-1">Mês de Referência:</label>
+                                <input type="month" value="${reportMonth}" onchange="reportMonth = this.value; render();" class="bg-inputBg border border-zinc-800 px-3 py-1.5 rounded-lg text-white">
+                            </div>
+                            <div class="flex items-end gap-2 pt-4">
+                                <button onclick="generatePDF('day')" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition cursor-pointer font-medium">📄 Gerar PDF do Dia</button>
+                                <button onclick="generatePDF('month')" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition cursor-pointer font-medium">📄 Gerar PDF do Mês</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="pdf-report-area" class="bg-cardBg border border-zinc-800/80 rounded-2xl overflow-hidden shadow-xl p-6 space-y-4">
+                        <div class="border-b border-zinc-800 pb-4 flex justify-between items-center">
+                            <div>
+                                <h2 class="text-lg font-bold text-white">${settings.companyName || 'L GONÇALVES'}</h2>
+                                <p class="text-xs text-zinc-400">Relatório Consolidado de Jornada de Trabalho</p>
+                            </div>
+                            <div class="text-right text-xs text-zinc-400">
+                                <p>CNPJ: ${settings.cnpj || ''}</p>
+                                <p>Emitido em: ${new Date().toLocaleDateString('pt-BR')}</p>
+                            </div>
+                        </div>
+
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-inputBg text-xs text-zinc-400 uppercase">
+                                <tr><th class="p-3">Funcionário</th><th class="p-3">Tipo</th><th class="p-3">Data e Hora</th><th class="p-3">Status</th></tr>
+                            </thead>
+                            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+                                ${filteredRecords.length === 0 ? `<tr><td colspan="4" class="p-6 text-center text-xs text-zinc-500">Nenhum registro encontrado para os filtros selecionados.</td></tr>` : filteredRecords.map(r => {
+                                    let badge = '<span class="text-zinc-500">Normal</span>';
+                                    const timeObj = new Date(r.timestamp);
+                                    if (r.type === 'Entrada') {
+                                        const hours = timeObj.getHours();
+                                        const mins = timeObj.getMinutes();
+                                        if (hours > 8 || (hours === 8 && mins > (settings.tolerance || 10))) {
+                                            badge = '<span class="bg-red-500/10 text-red-400 text-xs px-2 py-0.5 rounded font-medium">⚠️ Atrasado</span>';
+                                        } else {
+                                            badge = '<span class="bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded font-medium">No horário</span>';
+                                        }
+                                    } else if (r.type === 'Saída') {
+                                        if (timeObj.getHours() >= 18) {
+                                            badge = '<span class="bg-blue-500/10 text-blue-400 text-xs px-2 py-0.5 rounded font-medium">⭐ Hora Extra</span>';
+                                        }
+                                    }
+                                    return `
+                                        <tr>
+                                            <td class="p-3 font-medium text-white">${r.userName}</td>
+                                            <td class="p-3"><span class="bg-blue-500/10 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">${r.type}</span></td>
+                                            <td class="p-3 font-mono text-xs">${timeObj.toLocaleString('pt-BR')}</td>
+                                            <td class="p-3 text-xs">${badge}</td>
+                                        </tr>
+                                    `;
+                                }).reverse().join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- ABA 4: HISTÓRICO DE AJUSTES ---
+        function renderAuditTab(auditLogs) {
+            return `
+                <div class="space-y-6">
+                    <h3 class="text-sm font-semibold text-white">Histórico de Alterações Administrativas</h3>
+                    <div class="bg-cardBg border border-zinc-800/80 rounded-2xl overflow-hidden shadow-xl">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-inputBg text-xs text-zinc-400 uppercase">
+                                <tr><th class="p-4">Responsável</th><th class="p-4">Descrição da Alteração</th><th class="p-4">Data e Hora</th></tr>
+                            </thead>
+                            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+                                ${auditLogs.length === 0 ? `<tr><td colspan="3" class="p-6 text-center text-xs text-zinc-500">Nenhum ajuste registrado.</td></tr>` : auditLogs.map(a => `
+                                    <tr>
+                                        <td class="p-4 font-medium text-white">${a.adminName}</td>
+                                        <td class="p-4 text-zinc-300 text-xs">${a.description}</td>
+                                        <td class="p-4 font-mono text-xs">${new Date(a.timestamp).toLocaleString('pt-BR')}</td>
+                                    </tr>
+                                `).reverse().join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- ABA 5: CONFIGURAÇÕES DA EMPRESA ---
+        function renderSettingsTab(settings) {
+            return `
+                <div class="max-w-2xl mx-auto bg-cardBg border border-zinc-800/80 rounded-2xl p-6 space-y-6">
+                    <h3 class="text-lg font-bold text-white">Configurações Gerais da Empresa / Obra</h3>
+                    <form onsubmit="saveCompanySettings(event)" class="space-y-4 text-xs">
+                        <div>
+                            <label class="block text-zinc-400 mb-1">Nome da Empresa / Obra</label>
+                            <input type="text" id="set-company-name" value="${settings.companyName || ''}" required class="w-full bg-inputBg border border-zinc-800 px-3 py-2 rounded-lg text-white">
+                        </div>
+                        <div>
+                            <label class="block text-zinc-400 mb-1">CNPJ</label>
+                            <input type="text" id="set-cnpj" value="${settings.cnpj || ''}" class="w-full bg-inputBg border border-zinc-800 px-3 py-2 rounded-lg text-white">
+                        </div>
+                        <div>
+                            <label class="block text-zinc-400 mb-1">Fuso Horário</label>
+                            <input type="text" id="set-timezone" value="${settings.timezone || 'America/Sao_Paulo'}" class="w-full bg-inputBg border border-zinc-800 px-3 py-2 rounded-lg text-white">
+                        </div>
+                        <div>
+                            <label class="block text-zinc-400 mb-1">Tolerância de Atraso (Minutos)</label>
+                            <input type="number" id="set-tolerance" value="${settings.tolerance || 10}" class="w-full bg-inputBg border border-zinc-800 px-3 py-2 rounded-lg text-white">
+                        </div>
+                        <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 py-2.5 rounded-lg text-sm transition cursor-pointer">Salvar Configurações</button>
+                    </form>
+                </div>
+            `;
+        }
+
+        function saveCompanySettings(e) {
+            e.preventDefault();
+            const companyName = document.getElementById('set-company-name').value.trim();
+            const cnpj = document.getElementById('set-cnpj').value.trim();
+            const timezone = document.getElementById('set-timezone').value.trim();
+            const tolerance = parseInt(document.getElementById('set-tolerance').value) || 10;
+
+            DB.saveSettings({ companyName, cnpj, timezone, tolerance });
+
+            DB.saveAudit({
+                adminName: currentAdmin.name,
+                description: `Atualizou as configurações da empresa (${companyName})`,
+                timestamp: new Date().toISOString()
+            });
+
+            alert('Configurações salvas com sucesso!');
+            render();
+        }
+
+        // --- FUNÇÕES AUXILIARES DE GESTÃO E PDF ---
+        function openNewEmployeeModal() {
+            const name = prompt('Nome completo do funcionário:');
+            if (!name) return;
+            const code = prompt('Defina o código PIN de 4 dígitos (ex: 1003):');
+            if (!code || code.length !== 4) {
+                alert('O código deve ter exatamente 4 dígitos.');
+                return;
+            }
+            const cargo = prompt('Cargo:');
+            const setor = prompt('Setor:');
+
+            const users = DB.getUsers();
+            if (users.some(u => u.code === code)) {
+                return alert('Este código PIN já está em uso.');
+            }
+
+            users.push({ id: 'u_' + Math.random(), name, code, role: 'EMPLOYEE', cargo, setor, active: true });
+            DB.saveUsers(users);
+
+            DB.saveAudit({
+                adminName: currentAdmin.name,
+                description: `Cadastrou o funcionário ${name} (PIN: ${code})`,
+                timestamp: new Date().toISOString()
+            });
+
+            alert(`Funcionário ${name} cadastrado com sucesso!`);
+            render();
+        }
+
+        function editEmployee(id) {
+            const users = DB.getUsers();
+            const user = users.find(u => u.id === id);
+            if (!user) return;
+
+            const newName = prompt('Editar Nome:', user.name);
+            if (newName === null) return;
+            const newCode = prompt('Editar Código PIN (4 dígitos):', user.code);
+            if (!newCode || newCode.length !== 4) {
+                alert('O código PIN deve ter exatamente 4 dígitos.');
+                return;
+            }
+
+            if (users.some(u => u.code === newCode && u.id !== id)) {
+                return alert('Este código PIN já está em uso por outro funcionário.');
+            }
+
+            const newCargo = prompt('Editar Cargo:', user.cargo);
+            const newSetor = prompt('Editar Setor:', user.setor);
+
+            user.name = newName.trim();
+            user.code = newCode.trim();
+            user.cargo = newCargo ? newCargo.trim() : user.cargo;
+            user.setor = newSetor ? newSetor.trim() : user.setor;
+
+            DB.saveUsers(users);
+
+            DB.saveAudit({
+                adminName: currentAdmin.name,
+                description: `Editou dados do funcionário ${user.name}`,
+                timestamp: new Date().toISOString()
+            });
+
+            alert('Dados atualizados com sucesso!');
+            render();
+        }
+
+        function toggleEmployeeStatus(id) {
+            const users = DB.getUsers();
+            const user = users.find(u => u.id === id);
+            if (!user) return;
+
+            user.active = user.active === false ? true : false;
+            DB.saveUsers(users);
+
+            DB.saveAudit({
+                adminName: currentAdmin.name,
+                description: `Alterou status do funcionário ${user.name} para ${user.active ? 'Ativo' : 'Desativado'}`,
+                timestamp: new Date().toISOString()
+            });
+
+            render();
+        }
+
+        function generatePDF(type) {
+            if (type === 'day') {
+                if (!filterDate) {
+                    filterDate = new Date().toISOString().split('T')[0];
+                }
+                alert(`Gerando relatório em PDF do dia ${filterDate.split('-').reverse().join('/')}...`);
+            } else {
+                alert(`Gerando relatório em PDF do mês ${reportMonth.split('-').reverse().join('/')}...`);
+            }
+            window.print();
+        }
+
+        function exportBackup() {
+            const data = {
+                users: DB.getUsers(),
+                records: DB.getRecords(),
+                audit: DB.getAudit(),
+                settings: DB.getSettings(),
+                backupDate: new Date().toISOString()
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `backup-lgoncalves-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('Backup baixado com sucesso!');
+        }
+
+        function importBackup(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (data.users && data.records) {
+                        localStorage.setItem('lgoncalves_users', JSON.stringify(data.users));
+                        localStorage.setItem('lgoncalves_records', JSON.stringify(data.records));
+                        if (data.audit) localStorage.setItem('lgoncalves_audit', JSON.stringify(data.audit));
+                        if (data.settings) localStorage.setItem('lgoncalves_settings', JSON.stringify(data.settings));
+                        alert('Backup restaurado com sucesso!');
+                        render();
+                    } else {
+                        alert('Arquivo de backup inválido.');
+                    }
+                } catch (err) {
+                    alert('Erro ao ler o arquivo JSON.');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Executar aplicação
+        render();
+    </script>
+</body>
+</html>
